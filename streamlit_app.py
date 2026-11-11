@@ -66,20 +66,25 @@ else:
 
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Filter Tambahan Volume & Transaksi")
+
+# Slider Minimal Nilai Transaksi (Rentang Ideal BEI: 500 Juta - 20 Miliar)
 min_val_trx = st.sidebar.slider(
     "Minimal Nilai Transaksi (Rupiah)",
-    min_value=1_000_000_000,
+    min_value=500_000_000,
     max_value=20_000_000_000,
     value=3_000_000_000,
-    step=1_000_000_000,
+    step=500_000_000,
     format="Rp %d",
 )
+
+# Slider Minimal Lonjakan Volume vs MA20 (Bisa diatur batas minimalnya)
 vol_multiplier = st.sidebar.slider(
-    "Minimal Lonjakan Volume vs MA20",
-    min_value=1.2,
+    "Minimal Batas Lonjakan Volume (vs MA20)",
+    min_value=1.0,
     max_value=5.0,
     value=1.8,
     step=0.2,
+    format="%.1fx",
 )
 
 
@@ -289,17 +294,15 @@ def evaluate_combined_screener(
     latest = d_exec.iloc[-1]
     vol_ma20 = d_exec["Volume"].rolling(window=20).mean().iloc[-1]
 
-    # 1. ANALISIS VOLUME & PRICE ACTION (Screener Pendukung Akumulasi)
+    # 1. ANALISIS VOLUME & PRICE ACTION BERDASARKAN PARAMETER MINIMAL DI SIDEBAR
     val_trx = latest["Close"] * latest["Volume"]
     is_vol_spike = latest["Volume"] >= (vol_ma20 * min_vol_mult)
     is_val_passed = val_trx >= min_val
 
-    # Cek candle ditutup kuat (Close di 75% rentang harian ke atas)
     rng = latest["High"] - latest["Low"]
     close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
     is_closing_strong = close_pos >= 0.70
 
-    # Jika filter volume & transaksi tidak lolos, lewati untuk efisiensi
     passed_volume_filter = (
         is_vol_spike and is_val_passed and is_closing_strong
     )
@@ -325,7 +328,6 @@ def evaluate_combined_screener(
         and res_tf3["bias"] == "BUY"
     )
 
-    # Status Kategori Hasil
     if passed_volume_filter and is_bbma_valid:
       category = "🔥 COMBO SEMPURNA (Volume Meledak + Re-Entry Valid)"
       score = 3
@@ -369,8 +371,8 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
   st.markdown(
       "Sistem memindai seluruh emiten BEI untuk menyaring saham yang tidak"
       " hanya berada di area **Re-Entry / Tren Buy BBMA**, tetapi juga"
-      " **diserbu volume transaksi masif** hari ini agar siap melonjak keesokan"
-      " harinya."
+      " **diserbu volume transaksi masif** (sesuai batas minimal slider)"
+      " agar siap melonjak keesokan harinya."
   )
 
   scan_limit = st.sidebar.slider(
@@ -429,7 +431,6 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
           use_container_width=True,
       )
 
-      # Pilih emiten untuk lihat chart
       selected_valid = st.selectbox(
           "Pilih emiten di atas untuk melihat detail chart & struktur BBMA:",
           df_res["Emiten"].tolist(),
@@ -495,8 +496,8 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
     else:
       st.warning(
           "⚠️ Tidak ada emiten yang memenuhi kombinasi kriteria tersebut saat"
-          " ini. Coba longgarkan filter nilai transaksi atau lonjakan volume"
-          " di sidebar."
+          " ini. Coba longgarkan filter nilai transaksi atau batas minimal"
+          " lonjakan volume di sidebar."
       )
   else:
     st.info(
@@ -559,10 +560,9 @@ else:
     else:
       st.info(
           f"ℹ️ **{selected_stock}** belum memenuhi syarat kombo sempurna"
-          " (Volume atau struktur BBMA belum selaras)."
+          " berdasarkan batas minimal saat ini."
       )
 
-    # Tampilkan detail chart
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
