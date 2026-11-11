@@ -7,17 +7,18 @@ import yfinance as yf
 
 # Konfigurasi Halaman
 st.set_page_config(
-    page_title="BBMA MTF Pro BEI Screener", page_icon="📈", layout="wide"
+    page_title="BBMA Fuji V7 Pro BEI Screener", page_icon="📈", layout="wide"
 )
 
 st.title(
-    "📈 BBMA Oma Ally Pro - Multi-Timeframe Re-Entry Buy Screener (944+ Saham"
+    "📈 BBMA Fuji V7 Pro - Multi-Timeframe Re-Entry Buy Screener (944+ Saham"
     " BEI)"
 )
 st.markdown(
     f"📅 **Waktu Akses:** {datetime.now().strftime('%A, %d %B %Y - %H:%M')} WIB | "
     "Sistem validasi hierarki ketat khusus **Re-Entry Buy** (TF1 ➔ TF2 ➔ TF3)"
-    " untuk emiten Bursa Efek Indonesia."
+    " menggunakan logika **Fuji V7 (Oma Ally)** untuk emiten Bursa Efek"
+    " Indonesia."
 )
 
 
@@ -67,8 +68,15 @@ else:
 
 
 # -----------------------------------------------------------------
-# 3. FUNGSI TEKNIKAL & ANALISIS BBMA PRO (DENGAN ALIAS KOLOM AMAN)
+# 3. FUNGSI TEKNIKAL & ANALISIS BBMA FUJI V7
 # -----------------------------------------------------------------
+def calculate_wma(series, length):
+  weights = np.arange(1, length + 1)
+  return series.rolling(length).apply(
+      lambda x: np.dot(x, weights) / weights.sum(), raw=True
+  )
+
+
 @st.cache_data(ttl=0)
 def load_stock_data(ticker_symbol, interval):
   period = "5d" if interval in ["1m", "5m", "15m"] else "1mo"
@@ -86,32 +94,103 @@ def load_stock_data(ticker_symbol, interval):
         df.columns = df.columns.get_level_values(0)
       df = df.dropna(subset=["Open", "High", "Low", "Close"])
       if not df.empty:
-        return calculate_bbma(df)
+        return calculate_bbma_fuji(df)
   except Exception:
     pass
   return pd.DataFrame()
 
 
-def calculate_bbma(df):
-  if df.empty or len(df) < 20:
+def calculate_bbma_fuji(df):
+  if df.empty or len(df) < 50:
     return df
   df = df.copy()
-  df["MA5_High"] = df["High"].rolling(window=5).mean()
-  df["MA5_Low"] = df["Low"].rolling(window=5).mean()
-  df["MA10_High"] = df["High"].rolling(window=10).mean()
-  df["MA10_Low"] = df["Low"].rolling(window=10).mean()
-  df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
 
-  df["MA20"] = df["Close"].rolling(window=20).mean()
-  df["BB_Middle"] = df["MA20"]
-  std = df["Close"].rolling(window=20).std()
+  # Bollinger Bands (Length 20, Mult 2)
+  BBlength = 20
+  BBdev = 2.0
+  df["midBB"] = df["Close"].rolling(window=BBlength).mean()
+  stdev = df["Close"].rolling(window=BBlength).std()
+  df["topBB"] = df["midBB"] + (BBdev * stdev)
+  df["lowBB"] = df["midBB"] - (BBdev * stdev)
 
-  # Sediakan kedua nama kolom (TopBB/BB_Upper dan BottomBB/BB_Lower) agar aman
-  df["BB_Upper"] = df["MA20"] + (std * 2)
-  df["TopBB"] = df["BB_Upper"]
+  # WMA sesuai script Fuji V7
+  df["mahi5"] = calculate_wma(df["High"], 5)
+  df["mahi10"] = calculate_wma(df["High"], 10)
+  df["malo5"] = calculate_wma(df["Low"], 5)
+  df["malo10"] = calculate_wma(df["Low"], 10)
+  df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 
-  df["BB_Lower"] = df["MA20"] - (std * 2)
-  df["BottomBB"] = df["BB_Lower"]
+  # Shift untuk data sebelumnya ([1])
+  df["mahi5_p"] = df["mahi5"].shift(1)
+  df["malo5_p"] = df["malo5"].shift(1)
+  df["topBB_p"] = df["topBB"].shift(1)
+  df["lowBB_p"] = df["lowBB"].shift(1)
+
+  # --- PORTING LOGIKA SINYAL DARI FUJI V7 PINE SCRIPT ---
+  # 1. Extreme
+  df["ext_sell"] = (df["Close"] < df["topBB"]) & (
+      (df["mahi5_p"] > df["topBB"]) | (df["mahi5"] > df["topBB"])
+  )
+  df["ext_buy"] = (df["Close"] > df["lowBB"]) & (
+      (df["malo5_p"] < df["lowBB"]) | (df["malo5"] < df["lowBB"])
+  )
+
+  # 2. CSM / Momentum (mmt) & CSMKuat (ali)
+  df["mmt_sell"] = (df["Close"] < df["lowBB"]) & (df["Open"] > df["lowBB"])
+  df["mmt_buy"] = (df["Close"] > df["topBB"]) & (df["Open"] < df["topBB"])
+  df["ali_sell"] = (df["Open"] < df["lowBB"]) & (df["Close"] < df["lowBB"])
+  df["ali_buy"] = (df["Open"] > df["topBB"]) & (df["Close"] > df["topBB"])
+
+  # 3. MHV
+  extreme_prev_sell = df["mahi5"].shift(1) > df["topBB"].shift(1)
+  extreme_prev_buy = df["malo5"].shift(1) < df["lowBB"].shift(1)
+  is_csm_sell = df["Close"] < df["lowBB"]
+  is_csm_buy = df["Close"] > df["topBB"]
+  df["mhv_sell"] = (
+      extreme_prev_sell
+      & (~is_csm_sell)
+      & (df["High"] < df["topBB"])
+      & (df["Close"] > df["midBB"])
+  )
+  df["mhv_buy"] = (
+      extreme_prev_buy
+      & (~is_csm_buy)
+      & (df["Low"] > df["lowBB"])
+      & (df["Close"] < df["midBB"])
+  )
+
+  # 4. CSAK
+  df["csak_sell"] = (
+      (df["Close"] < df["midBB"])
+      & (df["Close"] < df["mahi5"])
+      & (df["Close"] < df["mahi10"])
+      & (df["Close"] < df["malo5"])
+      & (df["Close"] < df["malo10"])
+  )
+  df["csak_buy"] = (
+      (df["Close"] > df["midBB"])
+      & (df["Close"] > df["mahi5"])
+      & (df["Close"] > df["mahi10"])
+      & (df["Close"] > df["malo5"])
+      & (df["Close"] > df["malo10"])
+  )
+
+  # 5. Reentry (reject_mahi / reject_malo)
+  df["reject_mahi"] = (
+      (df["High"] > df["mahi5"])
+      & (df["Close"] < df["mahi5"])
+      & (df["Close"] < df["mahi10"])
+      & (df["Close"] < df["midBB"])
+      & (df["mahi5"] < df["midBB"])
+  )
+  df["reject_malo"] = (
+      (df["Low"] < df["malo5"])
+      & (df["Close"] > df["malo5"])
+      & (df["Close"] > df["malo10"])
+      & (df["Close"] > df["midBB"])
+      & (df["malo5"] > df["midBB"])
+  )
+
   return df
 
 
@@ -124,11 +203,11 @@ def resample_to_h4(df_h1):
       "Low": "min",
       "Close": "last",
   })
-  return calculate_bbma(df_h4.dropna())
+  return calculate_bbma_fuji(df_h4.dropna())
 
 
-def analyze_bbma_tf(df, role_type="TF1"):
-  if df.empty or len(df) < 55:
+def analyze_tf_fuji(df, role_type="TF1"):
+  if df.empty or len(df) < 50:
     return {
         "price": 0.0,
         "status": "DATA KURANG",
@@ -141,65 +220,53 @@ def analyze_bbma_tf(df, role_type="TF1"):
     }
 
   latest = df.iloc[-1]
-  prev = df.iloc[-2]
-
   c_price = float(latest["Close"])
-  top_bb = float(latest["TopBB"])
-  bot_bb = float(latest["BottomBB"])
-  mid_bb = float(latest["MA20"])
-  ema50 = float(latest["EMA50"])
-  ma5_h = float(latest["MA5_High"])
-  ma5_l = float(latest["MA5_Low"])
-  high = float(latest["High"])
-  low = float(latest["Low"])
+  top_bb = float(latest["topBB"])
+  bot_bb = float(latest["lowBB"])
+  mid_bb = float(latest["midBB"])
+  ema50 = float(latest["ema50"])
+
+  is_ext_buy = bool(latest["ext_buy"])
+  is_mhv_buy = bool(latest["mhv_buy"])
+  is_csak_buy = bool(latest["csak_buy"])
+  is_mmt_buy = bool(latest["mmt_buy"] or latest["ali_buy"])
+  is_re_buy = bool(latest["reject_malo"])
 
   status = "-"
   bias = "NEUTRAL"
   detail = "-"
 
-  reject_bot_bb = low <= bot_bb and c_price > bot_bb
-  reject_ema50_buy = low <= ema50 and c_price > ema50
-  momentum_buy = (
-      c_price <= bot_bb or (low <= bot_bb and prev["Low"] <= prev["BottomBB"])
-  )
-
-  body_size = abs(c_price - float(latest["Open"]))
-  avg_body = abs(df["Close"] - df["Open"]).rolling(10).mean().iloc[-1]
-  csak_buy = (
-      body_size > (avg_body * 1.2)
-      and c_price > mid_bb
-      and prev["Close"] <= prev["MA20"]
-  )
-
-  # 1. ATURAN TF1: Wajib Mencari Re-Entry Buy / Bullish Acuan Utama
+  # 1. ATURAN TF1: Acuan Utama Re-Entry Buy / Bullish
   if role_type == "TF1":
-    if (c_price <= ma5_h) and (c_price >= mid_bb or low >= mid_bb):
-      status = "RE-ENTRY BUY (Acuan Utama)"
+    if is_re_buy or (
+        c_price >= bot_bb and c_price <= latest["malo10"] * 1.025
+    ):
+      status = "RE-ENTRY BUY VALID (Acuan Utama)"
       bias = "BUY"
-      detail = "Zona Re-Entry Buy aktif di antara MA5/10 Low dan Mid BB."
+      detail = "Harga melakukan penolakan valid di area MA Low (Fuji V7)."
+    elif is_mhv_buy or is_ext_buy:
+      status = "EXTREME / MHV BUY (Acuan Utama)"
+      bias = "BUY"
+      detail = "Terdeteksi Extreme/MHV Buy di Low BB pada TF1."
     elif c_price > mid_bb:
       status = "BULLISH BIAS (Menunggu Re-Entry Buy)"
       bias = "BUY"
-      detail = "Harga di atas Mid BB, menunggu pullback ke area Re-Entry Buy."
+      detail = "Harga di atas Mid BB, menunggu pullback ke MA Low."
     else:
       status = "BEARISH / TIDAK VALID"
       bias = "SELL"
       detail = "TF1 berada di bawah Mid BB (Tidak memenuhi syarat Buy)."
 
-  # 2. ATURAN TF2: Konfirmasi (Extreme / CSAK / Momentum / Reject Bottom BB / Reject EMA 50)
+  # 2. ATURAN TF2: Konfirmasi
   elif role_type == "TF2":
-    if momentum_buy or reject_bot_bb or reject_ema50_buy or c_price <= bot_bb:
-      status = "KONFIRMASI BUY (Valid Reject/Extreme)"
+    if is_re_buy or is_ext_buy or is_mhv_buy or is_mmt_buy:
+      status = "KONFIRMASI BUY (Valid Fuji V7)"
       bias = "BUY"
-      detail = "TF2 mengonfirmasi lewat Extreme/Momentum/Reject Bottom BB atau EMA 50."
-    elif termasuk_csak := csak_buy or (c_price >= ma5_h and c_price > mid_bb):
-      status = "CSAK / RE-ENTRY BUY KONFIRMASI"
+      detail = "TF2 mengonfirmasi lewat Re-Entry/Extreme/MHV/Momentum Buy."
+    elif is_csak_buy or c_price > mid_bb:
+      status = "TF2 BULLISH / CSAK BUY"
       bias = "BUY"
-      detail = "TF2 membentuk CSAK Buy atau Re-Entry penunjang."
-    elif c_price > mid_bb:
-      status = "TF2 BULLISH CONTINUATION"
-      bias = "BUY"
-      detail = "Struktur TF2 mendukung kenaikan."
+      detail = "Struktur TF2 membentuk CSAK Buy atau berada di atas Mid BB."
     else:
       status = "TF2 BELUM KONFIRMASI"
       bias = "SELL"
@@ -207,18 +274,18 @@ def analyze_bbma_tf(df, role_type="TF1"):
 
   # 3. ATURAN TF3: Trigger Eksekusi Akhir
   elif role_type == "TF3":
-    if momentum_buy:
+    if is_mmt_buy:
       status = "TRIGGER MOMENTUM BUY"
       bias = "BUY"
-      detail = "TF3 membentuk Momentum Buy sebagai pelatuk eksekusi."
-    elif termasuk_csak_exec := csak_buy:
+      detail = "TF3 membentuk Momentum Buy menembus Top BB."
+    elif is_csak_buy:
       status = "TRIGGER CSAK BUY"
       bias = "BUY"
-      detail = "TF3 membentuk CSAK Buy (Full Setup / Trigger)."
-    elif (c_price <= ma5_l and c_price < mid_bb) or reject_bot_bb:
+      detail = "TF3 memicu CSAK Buy melewati Mid BB."
+    elif is_re_buy or is_ext_buy or is_mhv_buy:
       status = "TRIGGER RE-ENTRY / EXTREME BUY"
       bias = "BUY"
-      detail = "TF3 siap eksekusi Re-Entry / Extreme Buy."
+      detail = "TF3 siap eksekusi Re-Entry Buy di area MA Low."
     elif c_price > mid_bb:
       status = "TF3 BULLISH MENGALIR"
       bias = "BUY"
@@ -254,9 +321,9 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
     if d_high.empty or d_mid.empty or d_exec.empty:
       return None
 
-    res_tf1 = analyze_bbma_tf(d_high, role_type="TF1")
-    res_tf2 = analyze_bbma_tf(d_mid, role_type="TF2")
-    res_tf3 = analyze_bbma_tf(d_exec, role_type="TF3")
+    res_tf1 = analyze_tf_fuji(d_high, role_type="TF1")
+    res_tf2 = analyze_tf_fuji(d_mid, role_type="TF2")
+    res_tf3 = analyze_tf_fuji(d_exec, role_type="TF3")
 
     is_valid_buy = (
         res_tf1["bias"] == "BUY"
@@ -268,7 +335,7 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
     entry_zone = (res_tf3["bot_bb"] + res_tf3["mid_bb"]) / 2
 
     if is_valid_buy:
-      status_label = "🔥 PRO RE-ENTRY BUY VALID"
+      status_label = "🔥 PRO RE-ENTRY BUY VALID (Fuji V7)"
     elif res_tf1["bias"] == "BUY" and res_tf2["bias"] == "BUY":
       status_label = "⏳ Menunggu Trigger TF3"
     else:
@@ -293,7 +360,9 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
 # MODE 1: AUTO SCREENER
 # -----------------------------------------------------------------
 if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
-  st.subheader("🚀 Auto Screener - Filter Ketat Pro Re-Entry Buy")
+  st.subheader(
+      "🚀 Auto Screener - Filter Ketat Pro Re-Entry Buy (Logika Fuji V7)"
+  )
   st.markdown(
       "Sistem memindai emiten BEI secara otomatis untuk menyaring mana saja"
       " yang memenuhi syarat hierarki ketat **TF1 (Re-Entry) ➔ TF2 (Konfirmasi)"
@@ -303,7 +372,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
   scan_limit = st.sidebar.slider(
       "Jumlah Maksimal Saham yang Dipindai", 10, len(all_stocks), 60
   )
-  run_scan = st.sidebar.button("⚡ MULAI SCANNING PRO BUY")
+  run_scan = st.sidebar.button("⚡ MULAI SCANNING FUJI V7 BUY")
 
   if run_scan:
     stocks_to_scan = all_stocks[:scan_limit]
@@ -328,12 +397,12 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
       df_valid = df_res[df_res["Valid"] == True]
 
       st.markdown("---")
-      st.subheader("🔥 HASIL FILTER: SAHAM PRO VALID RE-ENTRY BUY")
+      st.subheader("🔥 HASIL FILTER: SAHAM FUJI V7 VALID RE-ENTRY BUY")
 
       if not df_valid.empty:
         st.success(
             f"Ditemukan **{len(df_valid)} emiten** dengan setup Pro Re-Entry Buy"
-            " yang valid!"
+            " Fuji V7 yang valid!"
         )
         st.dataframe(
             df_valid[
@@ -368,7 +437,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
         fig.add_trace(
             go.Scatter(
                 x=d_target.index,
-                y=d_target["TopBB"],
+                y=d_target["topBB"],
                 name="BB Upper",
                 line=dict(color="gray", width=1, dash="dot"),
             )
@@ -376,7 +445,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
         fig.add_trace(
             go.Scatter(
                 x=d_target.index,
-                y=d_target["MA20"],
+                y=d_target["midBB"],
                 name="Mid BB",
                 line=dict(color="orange", width=1.5),
             )
@@ -384,7 +453,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
         fig.add_trace(
             go.Scatter(
                 x=d_target.index,
-                y=d_target["BottomBB"],
+                y=d_target["lowBB"],
                 name="BB Lower",
                 line=dict(color="gray", width=1, dash="dot"),
             )
@@ -392,14 +461,14 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
         fig.add_trace(
             go.Scatter(
                 x=d_target.index,
-                y=d_target["EMA50"],
+                y=d_target["ema50"],
                 name="EMA 50",
                 line=dict(color="magenta", width=1.2),
             )
         )
 
         fig.update_layout(
-            title=f"Chart Eksekusi Pro - {selected_valid}.JK",
+            title=f"Chart Eksekusi Fuji V7 - {selected_valid}.JK",
             yaxis_title="Harga (IDR)",
             template="plotly_dark",
             height=500,
@@ -410,7 +479,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
       else:
         st.warning(
             "Belum ada emiten yang memenuhi kriteria mutlak Pro Re-Entry Buy"
-            " saat ini."
+            " Fuji V7 saat ini."
         )
 
       st.markdown("---")
@@ -425,7 +494,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
       st.error("Gagal menarik data pemindaian pasar.")
   else:
     st.info(
-        "👈 Atur batasan scan di sidebar, lalu klik **⚡ MULAI SCANNING PRO"
+        "👈 Atur batasan scan di sidebar, lalu klik **⚡ MULAI SCANNING FUJI V7"
         " BUY** untuk memfilter otomatis."
     )
 
@@ -433,17 +502,21 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
 # MODE 2: CEK MANUAL
 # -----------------------------------------------------------------
 else:
-  st.subheader("🔍 Cek Manual Pro - Analisis Hirarki Re-Entry Buy")
+  st.subheader(
+      "🔍 Cek Manual Pro - Analisis Hirarki Re-Entry Buy (Fuji V7 Logic)"
+  )
   st.markdown(
       "Pilih emiten apa saja untuk melihat rincian validasi per timeframe"
-      " berdasarkan aturan ketat Re-Entry Buy."
+      " berdasarkan aturan ketat Re-Entry Buy Fuji V7."
   )
 
   selected_stock = st.sidebar.selectbox(
       f"Pilih Emiten (Total {len(all_stocks)} Saham)", all_stocks, index=0
   )
 
-  with st.spinner(f"Memuat data analisis pro untuk {selected_stock}.JK ..."):
+  with st.spinner(
+      f"Memuat data analisis Fuji V7 untuk {selected_stock}.JK ..."
+  ):
     res = evaluate_pro_buy_combo(selected_stock, tf_high, tf_mid, tf_exec)
 
   if not res:
@@ -469,56 +542,55 @@ else:
     c4.metric("TF Acuan Re-Entry (TF1)", tf_high.upper())
 
     st.markdown("---")
-    st.subheader(f"🎯 Status Sinyal Pro: {res['Status Sinyal']}")
+    st.subheader(f"🎯 Status Sinyal Fuji V7: {res['Status Sinyal']}")
     st.markdown(f"📍 **Estimasi Area Titik Entry:** **{res['Estimasi Area Entry']}**")
 
     if res["Valid"]:
       st.success(
           f"Saham **{selected_stock}** saat ini memenuhi **Pro Setup Valid"
-          f" (Re-Entry Buy)** secara sempurna berdasarkan hirarki {tf_package}!"
+          f" (Re-Entry Buy)** secara sempurna berdasarkan hirarki {tf_package}"
+          " (Fuji V7)!"
       )
     else:
       st.info(
           f"Saham **{selected_stock}** belum memenuhi seluruh kriteria hirarki"
-          " Re-Entry Buy yang ketat pada saat ini."
+          " Re-Entry Buy Fuji V7 pada saat ini."
       )
 
     st.markdown("---")
-    st.subheader("📌 Matriks Validasi Hirarki Pro (TF1 ➔ TF2 ➔ TF3)")
+    st.subheader(
+        "📌 Matriks Validasi Hirarki Pro Fuji V7 (TF1 ➔ TF2 ➔ TF3)"
+    )
 
     matrix_rows = [
         {
             "Peran Hirarki": f"TF1 (Acuan Re-Entry - {tf_high.upper()})",
             "Status / Kondisi": res["TF1"]["status"],
             "Arah Bias": res["TF1"]["bias"],
-            "Top BB": f"${res['TF1']['top_bb']:,.2f}",
-            "Mid BB": f"${res['TF1']['mid_bb']:,.2f}",
-            "EMA 50": f"${res['TF1']['ema50']:,.2f}",
-            "Bottom BB": f"${res['TF1']['bot_bb']:,.2f}",
+            "Top BB": f"Rp {res['TF1']['top_bb']:,.2f}",
+            "Mid BB": f"Rp {res['TF1']['mid_bb']:,.2f}",
+            "EMA 50": f"Rp {res['TF1']['ema50']:,.2f}",
+            "Bottom BB": f"Rp {res['TF1']['bot_bb']:,.2f}",
             "Keterangan Analisis": res["TF1"]["detail"],
         },
         {
-            "Peran Hirarki": (
-                f"TF2 (Konfirmasi Reject/Extreme/CSAK - {tf_mid.upper()})"
-            ),
+            "Peran Hirarki": f"TF2 (Konfirmasi - {tf_mid.upper()})",
             "Status / Kondisi": res["TF2"]["status"],
             "Arah Bias": res["TF2"]["bias"],
-            "Top BB": f"${res['TF2']['top_bb']:,.2f}",
-            "Mid BB": f"${res['TF2']['mid_bb']:,.2f}",
-            "EMA 50": f"${res['TF2']['ema50']:,.2f}",
-            "Bottom BB": f"${res['TF2']['bot_bb']:,.2f}",
+            "Top BB": f"Rp {res['TF2']['top_bb']:,.2f}",
+            "Mid BB": f"Rp {res['TF2']['mid_bb']:,.2f}",
+            "EMA 50": f"Rp {res['TF2']['ema50']:,.2f}",
+            "Bottom BB": f"Rp {res['TF2']['bot_bb']:,.2f}",
             "Keterangan Analisis": res["TF2"]["detail"],
         },
         {
-            "Peran Hirarki": (
-                f"TF3 (Trigger Eksekusi Akhir - {tf_exec.upper()})"
-            ),
+            "Peran Hirarki": f"TF3 (Trigger Eksekusi Akhir - {tf_exec.upper()})",
             "Status / Kondisi": res["TF3"]["status"],
             "Arah Bias": res["TF3"]["bias"],
-            "Top BB": f"${res['TF3']['top_bb']:,.2f}",
-            "Mid BB": f"${res['TF3']['mid_bb']:,.2f}",
-            "EMA 50": f"${res['TF3']['ema50']:,.2f}",
-            "Bottom BB": f"${res['TF3']['bot_bb']:,.2f}",
+            "Top BB": f"Rp {res['TF3']['top_bb']:,.2f}",
+            "Mid BB": f"Rp {res['TF3']['mid_bb']:,.2f}",
+            "EMA 50": f"Rp {res['TF3']['ema50']:,.2f}",
+            "Bottom BB": f"Rp {res['TF3']['bot_bb']:,.2f}",
             "Keterangan Analisis": res["TF3"]["detail"],
         },
     ]
@@ -540,7 +612,7 @@ else:
     fig.add_trace(
         go.Scatter(
             x=d_exec.index,
-            y=d_exec["TopBB"],
+            y=d_exec["topBB"],
             name="BB Upper",
             line=dict(color="gray", width=1, dash="dot"),
         )
@@ -548,7 +620,7 @@ else:
     fig.add_trace(
         go.Scatter(
             x=d_exec.index,
-            y=d_exec["MA20"],
+            y=d_exec["midBB"],
             name="Mid BB",
             line=dict(color="orange", width=1.5),
         )
@@ -556,7 +628,7 @@ else:
     fig.add_trace(
         go.Scatter(
             x=d_exec.index,
-            y=d_exec["BottomBB"],
+            y=d_exec["lowBB"],
             name="BB Lower",
             line=dict(color="gray", width=1, dash="dot"),
         )
@@ -564,14 +636,16 @@ else:
     fig.add_trace(
         go.Scatter(
             x=d_exec.index,
-            y=d_exec["EMA50"],
+            y=d_exec["ema50"],
             name="EMA 50",
             line=dict(color="magenta", width=1.2),
         )
     )
 
     fig.update_layout(
-        title=f"Analisis Detail Pro BBMA - {selected_stock}.JK ({tf_exec})",
+        title=(
+            f"Analisis Detail Fuji V7 BBMA - {selected_stock}.JK ({tf_exec})"
+        ),
         yaxis_title="Harga (IDR)",
         template="plotly_dark",
         height=550,
