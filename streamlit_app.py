@@ -7,20 +7,18 @@ import yfinance as yf
 
 # Konfigurasi Halaman
 st.set_page_config(
-    page_title="Auto Screener BBMA MTF BEI", page_icon="🎯", layout="wide"
+    page_title="BBMA MTF Full BEI Screener", page_icon="📈", layout="wide"
 )
 
-st.title(
-    "🎯 Auto Screener & Filter Re-Entry Buy (Seluruh 944+ Saham BEI)"
-)
+st.title("📈 BBMA Oma Ally Multi-Timeframe Screener (Full 944+ Saham BEI)")
 st.markdown(
     f"📅 **Waktu Akses:** {datetime.now().strftime('%A, %d %B %Y - %H:%M')} WIB | "
-    "Sistem otomatis memindai seluruh emiten dari database untuk mencari emiten yang paling layak **Re-Entry Buy**."
+    "Sistem validasi hierarki tren (TF3 ➔ TF2 ➔ TF1) khusus emiten Bursa Efek Indonesia."
 )
 
 
 # -----------------------------------------------------------------
-# 1. LOAD OTOMATIS SELURUH SAHAM DARI EXCEL
+# 1. LOAD OTOMATIS SELURUH SAHAM DARI EXCEL DI GITHUB
 # -----------------------------------------------------------------
 @st.cache_data
 def load_all_tickers_from_excel():
@@ -39,12 +37,16 @@ def load_all_tickers_from_excel():
 all_stocks = load_all_tickers_from_excel()
 
 # -----------------------------------------------------------------
-# 2. SIDEBAR PENGATURAN PILIHAN TIMEFRAME
+# 2. SIDEBAR PENGATURAN MODE & TIMEFRAME
 # -----------------------------------------------------------------
-st.sidebar.header("⚙️ Konfigurasi Pemindai Otomatis")
+st.sidebar.header("⚙️ Konfigurasi Sistem")
+mode = st.sidebar.radio(
+    "Pilih Mode Operasi",
+    ["🚀 Auto Screener (Cari Sinyal Re-Entry)", "🔍 Cek Manual (Single Stock)"],
+)
 
 tf_package = st.sidebar.selectbox(
-    "Pilih Hierarki Timeframe",
+    "Pilih Paket Hierarki Timeframe",
     ["D1 - H4 - H1", "H4 - H1 - M15", "M15 - M5 - M1"],
     index=0,
 )
@@ -56,18 +58,9 @@ elif tf_package == "H4 - H1 - M15":
 else:
   tf_high, tf_mid, tf_exec = "15m", "5m", "1m"
 
-# Batasan scan agar proses optimal dan tidak timeout
-scan_limit = st.sidebar.slider(
-    "Jumlah Maksimal Saham yang Dipindai Sekaligus",
-    10,
-    len(all_stocks),
-    100,
-)
-run_auto_scan = st.sidebar.button("🚀 MULAI SCANNING OTOMATIS SEKARANG")
-
 
 # -----------------------------------------------------------------
-# 3. FUNGSI TEKNIKAL & BBMA
+# 3. FUNGSI TEKNIKAL & DATA
 # -----------------------------------------------------------------
 @st.cache_data(ttl=0)
 def load_stock_data(ticker_symbol, interval):
@@ -102,7 +95,7 @@ def calculate_bbma(df):
   return df
 
 
-def analyze_stock(code):
+def analyze_stock_logic(code):
   try:
     d_exec = calculate_bbma(load_stock_data(f"{code}.JK", tf_exec))
     d_mid = calculate_bbma(load_stock_data(f"{code}.JK", tf_mid))
@@ -115,7 +108,6 @@ def analyze_stock(code):
     m_bull = d_mid["Close"].iloc[-1] > d_mid["BB_Middle"].iloc[-1]
 
     exec_row = d_exec.iloc[-1]
-    # Syarat Re-Entry Buy: Harga menyentuh area MA Low dalam tren naik
     is_reentry = (
         exec_row["Low"] <= exec_row["MA10_Low"] * 1.015
         and exec_row["Close"] > exec_row["MA5_Low"]
@@ -123,6 +115,9 @@ def analyze_stock(code):
     )
 
     valid_buy = is_reentry and m_bull and h_bull
+
+    # Perkiraan Titik Entry (Kisaran MA Low)
+    ma_low_zone = (exec_row["MA5_Low"] + exec_row["MA10_Low"]) / 2
 
     if valid_buy:
       status = "🟢 RE-ENTRY BUY VALID"
@@ -134,151 +129,288 @@ def analyze_stock(code):
     return {
         "Emiten": code,
         "Harga Terkini": exec_row["Close"],
+        "Estimasi Area Entry (MA Low)": f"Rp {ma_low_zone:,.0f}",
         "Status Sinyal": status,
         "Valid": valid_buy,
         "DF_Exec": d_exec,
+        "DF_Mid": d_mid,
+        "DF_High": d_high,
     }
   except Exception:
     return None
 
 
 # -----------------------------------------------------------------
-# 4. TAMPILAN UTAMA APLIKASI
+# MODE 1: AUTO SCREENER (PENCARIAN OTOMATIS)
 # -----------------------------------------------------------------
-if run_auto_scan:
-  stocks_to_scan = all_stocks[:scan_limit]
-  progress_bar = st.progress(0)
-  status_text = st.empty()
+if mode == "🚀 Auto Screener (Cari Sinyal Re-Entry)":
+  st.subheader("🚀 Auto Screener & Filter Re-Entry Buy")
+  st.markdown(
+      "Sistem memindai emiten secara otomatis untuk menyaring mana saja yang"
+      f" **paling layak** berada di posisi **Re-Entry Buy** menggunakan"
+      f" hierarki **{tf_package}**."
+  )
 
-  results = []
-  total = len(stocks_to_scan)
+  scan_limit = st.sidebar.slider(
+      "Jumlah Maksimal Saham yang Dipindai", 10, len(all_stocks), 80
+  )
+  run_scan = st.sidebar.button("⚡ MULAI SCANNING PASAR")
 
-  for i, code in enumerate(stocks_to_scan):
-    status_text.text(
-        f"Memindai emiten [{i+1}/{total}]: {code}.JK (Hierarki:"
-        f" {tf_package}) ..."
-    )
-    res = analyze_stock(code)
-    if res:
-      results.append(res)
-    progress_bar.progress((i + 1) / total)
+  if run_scan:
+    stocks_to_scan = all_stocks[:scan_limit]
+    prog_bar = st.progress(0)
+    txt_status = st.empty()
 
-  status_text.empty()
-  progress_bar.empty()
+    results = []
+    total = len(stocks_to_scan)
 
-  if results:
-    df_res = pd.DataFrame(results)
-    df_valid = df_res[df_res["Valid"] == True]
+    for i, code in enumerate(stocks_to_scan):
+      txt_status.text(f"Memindai emiten [{i+1}/{total}]: {code}.JK ...")
+      res = analyze_stock_logic(code)
+      if res:
+        results.append(res)
+      prog_bar.progress((i + 1) / total)
 
-    st.markdown("---")
-    st.subheader("🔥 HASIL FILTER: SAHAM YANG LAYAK RE-ENTRY BUY")
+    txt_status.empty()
+    prog_bar.empty()
 
-    if not df_valid.empty:
-      st.success(
-          f"Ditemukan **{len(df_valid)} emiten** dari {total} saham yang"
-          " dipindai dan **paling layak** berada di posisi Re-Entry Buy saat"
-          " ini!"
-      )
+    if results:
+      df_res = pd.DataFrame(results)
+      df_valid = df_res[df_res["Valid"] == True]
 
-      # Tampilkan tabel khusus emiten yang VALID
+      st.markdown("---")
+      st.subheader("🔥 HASIL FILTER: SAHAM VALID RE-ENTRY BUY")
+
+      if not df_valid.empty:
+        st.success(
+            f"Ditemukan **{len(df_valid)} emiten** yang paling layak Re-Entry"
+            " Buy!"
+        )
+        st.dataframe(
+            df_valid[
+                [
+                    "Emiten",
+                    "Harga Terkini",
+                    "Estimasi Area Entry (MA Low)",
+                    "Status Sinyal",
+                ]
+            ].style.format({"Harga Terkini": "Rp {:,.0f}"}),
+            use_container_width=True,
+        )
+
+        # Interaktif Chart untuk Emiten yang Valid
+        selected_valid = st.selectbox(
+            "Pilih emiten valid di atas untuk melihat chart:",
+            df_valid["Emiten"].tolist(),
+        )
+        matched_row = df_valid[df_valid["Emiten"] == selected_valid].iloc[0]
+        d_target = matched_row["DF_Exec"]
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Candlestick(
+                x=d_target.index,
+                open=d_target["Open"],
+                high=d_target["High"],
+                low=d_target["Low"],
+                close=d_target["Close"],
+                name="Harga",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d_target.index,
+                y=d_target["BB_Upper"],
+                name="BB Upper",
+                line=dict(color="gray", width=1, dash="dot"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d_target.index,
+                y=d_target["BB_Middle"],
+                name="BB Mid",
+                line=dict(color="orange", width=1.5),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d_target.index,
+                y=d_target["BB_Lower"],
+                name="BB Lower",
+                line=dict(color="gray", width=1, dash="dot"),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d_target.index,
+                y=d_target["MA5_Low"],
+                name="MA5 Low",
+                line=dict(color="blue", width=1),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d_target.index,
+                y=d_target["MA10_Low"],
+                name="MA10 Low",
+                line=dict(color="red", width=1),
+            )
+        )
+
+        fig.update_layout(
+            title=f"Chart BBMA Eksekusi - {selected_valid}.JK",
+            yaxis_title="Harga (IDR)",
+            template="plotly_dark",
+            height=500,
+            xaxis_rangeslider_visible=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+      else:
+        st.warning(
+            "Belum ada emiten yang memenuhi kriteria mutlak Re-Entry Buy saat"
+            " ini."
+        )
+
+      st.markdown("---")
+      st.subheader("📋 Seluruh Hasil Pemantauan Pasar")
       st.dataframe(
-          df_valid[["Emiten", "Harga Terkini", "Status Sinyal"]].style.format(
-              {"Harga Terkini": "Rp {:,.0f}"}
-          ),
+          df_res[
+              [
+                  "Emiten",
+                  "Harga Terkini",
+                  "Estimasi Area Entry (MA Low)",
+                  "Status Sinyal",
+              ]
+          ].style.format({"Harga Terkini": "Rp {:,.0f}"}),
           use_container_width=True,
       )
-
-      # Fitur interaktif untuk langsung melihat chart saham yang valid
-      st.markdown("### 📊 Lihat Chart Detail Emiten Valid")
-      selected_valid_stock = st.selectbox(
-          "Pilih emiten di atas untuk melihat chart BBMA-nya:",
-          df_valid["Emiten"].tolist(),
-      )
-
-      matched_row = df_valid[df_valid["Emiten"] == selected_valid_stock].iloc[0]
-      d_target = matched_row["DF_Exec"]
-
-      fig = go.Figure()
-      fig.add_trace(
-          go.Candlestick(
-              x=d_target.index,
-              open=d_target["Open"],
-              high=d_target["High"],
-              low=d_target["Low"],
-              close=d_target["Close"],
-              name="Harga",
-          )
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=d_target.index,
-              y=d_target["BB_Upper"],
-              name="BB Upper",
-              line=dict(color="gray", width=1, dash="dot"),
-          )
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=d_target.index,
-              y=d_target["BB_Middle"],
-              name="BB Mid",
-              line=dict(color="orange", width=1.5),
-          )
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=d_target.index,
-              y=d_target["BB_Lower"],
-              name="BB Lower",
-              line=dict(color="gray", width=1, dash="dot"),
-          )
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=d_target.index,
-              y=d_target["MA5_Low"],
-              name="MA5 Low",
-              line=dict(color="blue", width=1),
-          )
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=d_target.index,
-              y=d_target["MA10_Low"],
-              name="MA10 Low",
-              line=dict(color="red", width=1),
-          )
-      )
-
-      fig.update_layout(
-          title=f"Chart BBMA Re-Entry Buy - {selected_valid_stock}.JK",
-          yaxis_title="Harga (IDR)",
-          template="plotly_dark",
-          height=500,
-          xaxis_rangeslider_visible=False,
-      )
-      st.plotly_chart(fig, use_container_width=True)
-
     else:
-      st.warning(
-          "Belum ada emiten yang memenuhi kriteria mutlak Re-Entry Buy pada"
-          f" batasan scan dan timeframe **{tf_package}** saat ini. Pasar sedang"
-          " dalam fase *waiting mode*."
+      st.error("Gagal menarik data pemindaian pasar.")
+  else:
+    st.info(
+        "👈 Atur batasan scan di sidebar, lalu klik **⚡ MULAI SCANNING PASAR**"
+        " untuk memfilter otomatis."
+    )
+
+# -----------------------------------------------------------------
+# MODE 2: CEK MANUAL (SINGLE STOCK ANALYSIS)
+# -----------------------------------------------------------------
+else:
+  st.subheader("🔍 Cek Manual & Analisis Mendalam Emiten")
+  st.markdown(
+      "Pilih emiten apa saja secara bebas untuk melihat detail validasi"
+      " Multi-Timeframe dan chart BBMA-nya."
+  )
+
+  selected_stock = st.sidebar.selectbox(
+      f"Pilih Emiten (Total {len(all_stocks)} Saham)", all_stocks, index=0
+  )
+
+  with st.spinner(f"Memuat data analisis untuk {selected_stock}.JK ..."):
+    res = analyze_stock_logic(selected_stock)
+
+  if not res or res["DF_Exec"].empty:
+    st.warning(
+        f"⚠️ Gagal memuat data untuk **{selected_stock}.JK**. Periksa likuiditas"
+        " saham tersebut."
+    )
+  else:
+    d_exec = res["DF_Exec"]
+    latest_price = d_exec["Close"].iloc[-1]
+    prev_price = d_exec["Close"].iloc[-2]
+    chg = latest_price - prev_price
+    pct = (chg / prev_price) * 100
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        f"Harga {selected_stock}",
+        f"Rp {latest_price:,.0f}",
+        f"{chg:+,.0f} ({pct:+.2f}%)",
+    )
+    c2.metric("TF Eksekusi (TF1)", tf_exec.upper())
+    c3.metric("TF Validasi (TF2)", tf_mid.upper())
+    c4.metric("TF Tren Utama (TF3)", tf_high.upper())
+
+    st.markdown("---")
+    st.subheader(f"🎯 Status Sinyal Manual: {res['Status Sinyal']}")
+    st.markdown(
+        f"📍 **Estimasi Area Titik Entry (MA Low):**"
+        f" **{res['Estimasi Area Entry (MA Low)']}**"
+    )
+
+    if res["Valid"]:
+      st.success(
+          f"Saham **{selected_stock}** saat ini berada di posisi **Re-Entry"
+          f" Buy yang Valid** menggunakan hierarki {tf_package}!"
+      )
+    else:
+      st.info(
+          f"Saham **{selected_stock}** belum memenuhi syarat mutlak Re-Entry"
+          " Buy pada saat ini."
       )
 
     st.markdown("---")
-    st.subheader("📋 Tabel Pemantauan Seluruh Emiten yang Dipindai")
-    st.dataframe(
-        df_res[["Emiten", "Harga Terkini", "Status Sinyal"]].style.format(
-            {"Harga Terkini": "Rp {:,.0f}"}
-        ),
-        use_container_width=True,
-    )
-  else:
-    st.error("Gagal menarik data pemindaian pasar.")
 
-else:
-  st.info(
-      "👈 Atur paket timeframe dan jumlah batasan scan di sidebar, lalu klik"
-      " tombol **🚀 MULAI SCANNING OTOMATIS SEKARANG**."
-  )
+    # Chart Detail
+    fig = go.Figure()
+    fig.add_trace(
+        go.Candlestick(
+            x=d_exec.index,
+            open=d_exec["Open"],
+            high=d_exec["High"],
+            low=d_exec["Low"],
+            close=d_exec["Close"],
+            name="Harga",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["BB_Upper"],
+            name="BB Upper",
+            line=dict(color="gray", width=1, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["BB_Middle"],
+            name="BB Mid",
+            line=dict(color="orange", width=1.5),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["BB_Lower"],
+            name="BB Lower",
+            line=dict(color="gray", width=1, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["MA5_Low"],
+            name="MA5 Low",
+            line=dict(color="blue", width=1),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["MA10_Low"],
+            name="MA10 Low",
+            line=dict(color="red", width=1),
+        )
+    )
+
+    fig.update_layout(
+        title=f"Analisis Detail BBMA - {selected_stock}.JK ({tf_exec})",
+        yaxis_title="Harga (IDR)",
+        template="plotly_dark",
+        height=550,
+        xaxis_rangeslider_visible=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
