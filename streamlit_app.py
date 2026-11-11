@@ -16,7 +16,7 @@ st.title(
 )
 st.markdown(
     f"📅 **Waktu Akses:** {datetime.now().strftime('%A, %d %B %Y - %H:%M')} WIB | "
-    "Sistem validasi hierarki ketat khusus **Re-Entry Buy** (TF3 ➔ TF2 ➔ TF1)"
+    "Sistem validasi hierarki ketat khusus **Re-Entry Buy** (TF1 ➔ TF2 ➔ TF3)"
     " untuk emiten Bursa Efek Indonesia."
 )
 
@@ -67,11 +67,10 @@ else:
 
 
 # -----------------------------------------------------------------
-# 3. FUNGSI TEKNIKAL & ANALISIS BBMA PRO (BUY STRICT)
+# 3. FUNGSI TEKNIKAL & ANALISIS BBMA PRO (DENGAN ALIAS KOLOM AMAN)
 # -----------------------------------------------------------------
 @st.cache_data(ttl=0)
 def load_stock_data(ticker_symbol, interval):
-  # Perpanjang periode untuk Daily (1d) agar EMA 50 (butuh min 55 baris) aman
   period = "5d" if interval in ["1m", "5m", "15m"] else "1mo"
   if interval == "4h":
     period = "3mo"
@@ -87,10 +86,33 @@ def load_stock_data(ticker_symbol, interval):
         df.columns = df.columns.get_level_values(0)
       df = df.dropna(subset=["Open", "High", "Low", "Close"])
       if not df.empty:
-        return df
+        return calculate_bbma(df)
   except Exception:
     pass
   return pd.DataFrame()
+
+
+def calculate_bbma(df):
+  if df.empty or len(df) < 20:
+    return df
+  df = df.copy()
+  df["MA5_High"] = df["High"].rolling(window=5).mean()
+  df["MA5_Low"] = df["Low"].rolling(window=5).mean()
+  df["MA10_High"] = df["High"].rolling(window=10).mean()
+  df["MA10_Low"] = df["Low"].rolling(window=10).mean()
+  df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+
+  df["MA20"] = df["Close"].rolling(window=20).mean()
+  df["BB_Middle"] = df["MA20"]
+  std = df["Close"].rolling(window=20).std()
+
+  # Sediakan kedua nama kolom (TopBB/BB_Upper dan BottomBB/BB_Lower) agar aman
+  df["BB_Upper"] = df["MA20"] + (std * 2)
+  df["TopBB"] = df["BB_Upper"]
+
+  df["BB_Lower"] = df["MA20"] - (std * 2)
+  df["BottomBB"] = df["BB_Lower"]
+  return df
 
 
 def resample_to_h4(df_h1):
@@ -102,7 +124,7 @@ def resample_to_h4(df_h1):
       "Low": "min",
       "Close": "last",
   })
-  return df_h4.dropna()
+  return calculate_bbma(df_h4.dropna())
 
 
 def analyze_bbma_tf(df, role_type="TF1"):
@@ -116,28 +138,6 @@ def analyze_bbma_tf(df, role_type="TF1"):
         "mid_bb": 0.0,
         "ema50": 0.0,
         "detail": "Data tidak mencukupi untuk indikator lengkap",
-    }
-
-  df = df.copy()
-  df["MA20"] = df["Close"].rolling(window=20).mean()
-  df["STD"] = df["Close"].rolling(window=20).std()
-  df["TopBB"] = df["MA20"] + (df["STD"] * 2)
-  df["BottomBB"] = df["MA20"] - (df["STD"] * 2)
-  df["MA5_High"] = df["High"].rolling(window=5).mean()
-  df["MA5_Low"] = df["Low"].rolling(window=5).mean()
-  df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
-
-  df = df.dropna()
-  if df.empty or len(df) < 2:
-    return {
-        "price": 0.0,
-        "status": "KOSONG",
-        "bias": "NEUTRAL",
-        "top_bb": 0.0,
-        "bot_bb": 0.0,
-        "mid_bb": 0.0,
-        "ema50": 0.0,
-        "detail": "Data kosong setelah kalkulasi",
     }
 
   latest = df.iloc[-1]
@@ -157,7 +157,6 @@ def analyze_bbma_tf(df, role_type="TF1"):
   bias = "NEUTRAL"
   detail = "-"
 
-  # Deteksi Rejection / Extreme / CSAK khusus arah BUY
   reject_bot_bb = low <= bot_bb and c_price > bot_bb
   reject_ema50_buy = low <= ema50 and c_price > ema50
   momentum_buy = (
@@ -193,7 +192,7 @@ def analyze_bbma_tf(df, role_type="TF1"):
       status = "KONFIRMASI BUY (Valid Reject/Extreme)"
       bias = "BUY"
       detail = "TF2 mengonfirmasi lewat Extreme/Momentum/Reject Bottom BB atau EMA 50."
-    elif csak_buy or (c_price >= ma5_h and c_price > mid_bb):
+    elif termasuk_csak := csak_buy or (c_price >= ma5_h and c_price > mid_bb):
       status = "CSAK / RE-ENTRY BUY KONFIRMASI"
       bias = "BUY"
       detail = "TF2 membentuk CSAK Buy atau Re-Entry penunjang."
@@ -206,13 +205,13 @@ def analyze_bbma_tf(df, role_type="TF1"):
       bias = "SELL"
       detail = "TF2 belum menunjukkan konfirmasi arah Buy."
 
-  # 3. ATURAN TF3: Trigger Eksekusi Akhir (Momentum Buy / CSAK Buy / Re-Entry / Extreme Buy)
+  # 3. ATURAN TF3: Trigger Eksekusi Akhir
   elif role_type == "TF3":
     if momentum_buy:
       status = "TRIGGER MOMENTUM BUY"
       bias = "BUY"
       detail = "TF3 membentuk Momentum Buy sebagai pelatuk eksekusi."
-    elif termasuk_csak := csak_buy:
+    elif termasuk_csak_exec := csak_buy:
       status = "TRIGGER CSAK BUY"
       bias = "BUY"
       detail = "TF3 membentuk CSAK Buy (Full Setup / Trigger)."
@@ -259,7 +258,6 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
     res_tf2 = analyze_bbma_tf(d_mid, role_type="TF2")
     res_tf3 = analyze_bbma_tf(d_exec, role_type="TF3")
 
-    # Syarat Mutlak Pro Re-Entry Buy: Ketiga TF harus memiliki bias BUY (Alignment Sempurna)
     is_valid_buy = (
         res_tf1["bias"] == "BUY"
         and res_tf2["bias"] == "BUY"
@@ -267,7 +265,6 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
         and "RE-ENTRY" in res_tf1["status"]
     )
 
-    # Estimasi Area Titik Entry (Kisaran MA Low / Mid BB terdekat)
     entry_zone = (res_tf3["bot_bb"] + res_tf3["mid_bb"]) / 2
 
     if is_valid_buy:
@@ -293,7 +290,7 @@ def evaluate_pro_buy_combo(code, tf_high_code, tf_mid_code, tf_exec_code):
 
 
 # -----------------------------------------------------------------
-# MODE 1: AUTO SCREENER (PENCARIAN OTOMATIS RE-ENTRY BUY)
+# MODE 1: AUTO SCREENER
 # -----------------------------------------------------------------
 if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
   st.subheader("🚀 Auto Screener - Filter Ketat Pro Re-Entry Buy")
@@ -350,7 +347,6 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
             use_container_width=True,
         )
 
-        # Interaktif Chart untuk Emiten yang Valid
         selected_valid = st.selectbox(
             "Pilih emiten valid di atas untuk melihat detail chart:",
             df_valid["Emiten"].tolist(),
@@ -434,7 +430,7 @@ if mode == "🚀 Auto Screener (Cari Re-Entry Buy Ketat)":
     )
 
 # -----------------------------------------------------------------
-# MODE 2: CEK MANUAL (SINGLE STOCK PRO ANALYSIS)
+# MODE 2: CEK MANUAL
 # -----------------------------------------------------------------
 else:
   st.subheader("🔍 Cek Manual Pro - Analisis Hirarki Re-Entry Buy")
@@ -448,9 +444,7 @@ else:
   )
 
   with st.spinner(f"Memuat data analisis pro untuk {selected_stock}.JK ..."):
-    res = evaluate_pro_buy_combo(
-        selected_stock, tf_high, tf_mid, tf_exec
-    )
+    res = evaluate_pro_buy_combo(selected_stock, tf_high, tf_mid, tf_exec)
 
   if not res:
     st.warning(
@@ -532,7 +526,6 @@ else:
 
     st.markdown("---")
 
-    # Chart Detail Pro
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
