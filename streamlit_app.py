@@ -67,23 +67,23 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Filter Tambahan Volume & Transaksi")
 
-# Slider Minimal Nilai Transaksi (Rentang Ideal BEI: 500 Juta - 20 Miliar)
-min_val_trx = st.sidebar.slider(
-    "Minimal Nilai Transaksi (Rupiah)",
-    min_value=500_000_000,
-    max_value=20_000_000_000,
-    value=3_000_000_000,
-    step=500_000_000,
+# RANGE SLIDER: Batas Minimum & Maksimum Nilai Transaksi
+val_range = st.sidebar.slider(
+    "Rentang Nilai Transaksi (Rupiah)",
+    min_value=100_000_000,
+    max_value=50_000_000_000,
+    value=(1_000_000_000, 20_000_000_000),  # Default: 1 Miliar s.d 20 Miliar
+    step=100_000_000,
     format="Rp %d",
 )
 
-# Slider Minimal Lonjakan Volume vs MA20 (Bisa diatur batas minimalnya)
-vol_multiplier = st.sidebar.slider(
-    "Minimal Batas Lonjakan Volume (vs MA20)",
-    min_value=1.0,
-    max_value=5.0,
-    value=1.8,
-    step=0.2,
+# RANGE SLIDER: Batas Minimum & Maksimum Lonjakan Volume vs MA20
+vol_range = st.sidebar.slider(
+    "Rentang Lonjakan Volume (vs MA20)",
+    min_value=0.5,
+    max_value=10.0,
+    value=(1.5, 5.0),  # Default: 1.5x s.d 5.0x
+    step=0.1,
     format="%.1fx",
 )
 
@@ -141,11 +141,10 @@ def calculate_bbma_fuji(df):
   df["malo10"] = calculate_wma(df["Low"], 10)
   df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 
-  # Shift untuk data sebelumnya ([1])
   df["mahi5_p"] = df["mahi5"].shift(1)
   df["malo5_p"] = df["malo5"].shift(1)
 
-  # --- PORTING LOGIKA SINYAL DARI FUJI V7 PINE SCRIPT ---
+  # Sinyal Fuji V7
   df["ext_buy"] = (df["Close"] > df["lowBB"]) & (
       (df["malo5_p"] < df["lowBB"]) | (df["malo5"] < df["lowBB"])
   )
@@ -284,7 +283,7 @@ def analyze_tf_fuji(df, role_type="TF1"):
 
 
 def evaluate_combined_screener(
-    code, tf_high_code, tf_mid_code, tf_exec_code, min_val, min_vol_mult
+    code, tf_high_code, tf_mid_code, tf_exec_code, val_range, vol_range
 ):
   try:
     d_exec = load_stock_data(f"{code}.JK", tf_exec_code)
@@ -294,20 +293,24 @@ def evaluate_combined_screener(
     latest = d_exec.iloc[-1]
     vol_ma20 = d_exec["Volume"].rolling(window=20).mean().iloc[-1]
 
-    # 1. ANALISIS VOLUME & PRICE ACTION BERDASARKAN PARAMETER MINIMAL DI SIDEBAR
     val_trx = latest["Close"] * latest["Volume"]
-    is_vol_spike = latest["Volume"] >= (vol_ma20 * min_vol_mult)
-    is_val_passed = val_trx >= min_val
+    vol_ratio = (
+        latest["Volume"] / vol_ma20 if vol_ma20 > 0 else 0
+    )
+
+    # 1. EVALUASI FILTER RENTANG MIN-MAX DARI SIDEBAR
+    is_val_passed = val_range[0] <= val_trx <= val_range[1]
+    is_vol_passed = vol_range[0] <= vol_ratio <= vol_range[1]
 
     rng = latest["High"] - latest["Low"]
     close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
     is_closing_strong = close_pos >= 0.70
 
     passed_volume_filter = (
-        is_vol_spike and is_val_passed and is_closing_strong
+        is_vol_passed and is_val_passed and is_closing_strong
     )
 
-    # 2. ANALISIS MULTI-TIMEFRAME BBMA FUJI V7
+    # 2. EVALUASI STRUKTUR BBMA FUJI V7
     if tf_high_code == "4h":
       df_h1 = load_stock_data(f"{code}.JK", "1h")
       d_high = resample_to_h4(df_h1)
@@ -346,9 +349,7 @@ def evaluate_combined_screener(
         "Emiten": code,
         "Harga Terkini": res_tf3["price"],
         "Nilai Transaksi": f"Rp {val_trx:,.0f}",
-        "Lonjakan Vol": (
-            f"{latest['Volume']/vol_ma20:.1f}x MA20" if vol_ma20 > 0 else "-"
-        ),
+        "Lonjakan Vol": f"{vol_ratio:.1f}x MA20",
         "Estimasi Entry": f"Rp {entry_zone:,.0f}",
         "Kategori Sinyal": category,
         "Score": score,
@@ -369,10 +370,9 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
       "🚀 Auto Screener - Combo Sempurna (Fuji V7 BBMA + Volume Dynamics)"
   )
   st.markdown(
-      "Sistem memindai seluruh emiten BEI untuk menyaring saham yang tidak"
-      " hanya berada di area **Re-Entry / Tren Buy BBMA**, tetapi juga"
-      " **diserbu volume transaksi masif** (sesuai batas minimal slider)"
-      " agar siap melonjak keesokan harinya."
+      "Sistem memindai seluruh emiten BEI untuk menyaring saham berdasarkan"
+      " rentang nilai transaksi dan lonjakan volume minimal-maksimal yang Anda"
+      " tentukan di sidebar."
   )
 
   scan_limit = st.sidebar.slider(
@@ -393,12 +393,7 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
           f"Memindai & Menganalisis [{i+1}/{total}]: {code}.JK ..."
       )
       res = evaluate_combined_screener(
-          code,
-          tf_high,
-          tf_mid,
-          tf_exec,
-          min_val_trx,
-          vol_multiplier,
+          code, tf_high, tf_mid, tf_exec, val_range, vol_range
       )
       if res:
         results.append(res)
@@ -495,14 +490,13 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
 
     else:
       st.warning(
-          "⚠️ Tidak ada emiten yang memenuhi kombinasi kriteria tersebut saat"
-          " ini. Coba longgarkan filter nilai transaksi atau batas minimal"
-          " lonjakan volume di sidebar."
+          "⚠️ Tidak ada emiten yang memenuhi kombinasi rentang tersebut saat"
+          " ini. Coba perlebar rentang nilai transaksi atau volume di sidebar."
       )
   else:
     st.info(
-        "👈 Sesuaikan parameter di sidebar, lalu klik **⚡ MULAI SCANNING"
-        " GABUNGAN** untuk memindai pasar BEI."
+        "👈 Sesuaikan rentang parameter di sidebar, lalu klik **⚡ MULAI"
+        " SCANNING GABUNGAN** untuk memindai pasar BEI."
     )
 
 # -----------------------------------------------------------------
@@ -520,12 +514,7 @@ else:
       f"Menganalisis data mendalam untuk {selected_stock}.JK ..."
   ):
     res = evaluate_combined_screener(
-        selected_stock,
-        tf_high,
-        tf_mid,
-        tf_exec,
-        min_val_trx,
-        vol_multiplier,
+        selected_stock, tf_high, tf_mid, tf_exec, val_range, vol_range
     )
     d_exec = load_stock_data(f"{selected_stock}.JK", tf_exec)
 
@@ -555,12 +544,13 @@ else:
     st.markdown("---")
     if res:
       st.success(
-          f"✨ **{selected_stock}** memenuhi kriteria screener gabungan!"
+          f"✨ **{selected_stock}** memenuhi kriteria screener gabungan"
+          " berdasarkan rentang Anda!"
       )
     else:
       st.info(
-          f"ℹ️ **{selected_stock}** belum memenuhi syarat kombo sempurna"
-          " berdasarkan batas minimal saat ini."
+          f"ℹ️ **{selected_stock}** berada di luar rentang filter minimal-maksimal"
+          " yang diatur di sidebar."
       )
 
     fig = go.Figure()
