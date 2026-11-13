@@ -548,7 +548,7 @@ else:
     chg = latest_price - prev_price
     pct = (chg / prev_price) * 100 if prev_price > 0 else 0
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
     c1.metric(
         f"Harga {selected_stock}",
         f"Rp {latest_price:,.0f}",
@@ -558,7 +558,20 @@ else:
     c3.metric(
         "Nilai Transaksi", f"Rp {latest_price * d_exec['Volume'].iloc[-1]:,.0f}"
     )
-    c4.metric("Status Kombo", res["Kategori Sinyal"] if res else "Belum Masuk")
+
+    # Status Kombo menggunakan kotak HTML kustom agar teks tidak terpotong ke kanan
+    status_text = (
+        res["Kategori Sinyal"] if res else "Belum Masuk (Di Luar Filter)"
+    )
+    c4.markdown(
+        f"""
+        <div style="background-color: #262730; padding: 10px 14px; border-radius: 4px; border: 1px solid #41424C;">
+            <p style="color: #9N9N9N; font-size: 12px; margin-bottom: 2px;">Status Kombo</p>
+            <p style="color: #FFFFFF; font-size: 15px; font-weight: 600; margin: 0; word-break: break-word;">{status_text}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown("---")
     if res:
