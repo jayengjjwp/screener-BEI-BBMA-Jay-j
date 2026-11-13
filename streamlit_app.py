@@ -7,16 +7,16 @@ import yfinance as yf
 
 # Konfigurasi Halaman
 st.set_page_config(
-    page_title="BBMA Fuji V7 & Volume Pro BEI Screener",
+    page_title="BBMA Fuji V7 Pro BEI Screener",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 BBMA Fuji V7 & Volume Dynamics - Ultimate BEI Screener")
+st.title("📈 BBMA Fuji V7 - Ultimate BEI Re-Entry Screener")
 st.markdown(
     f"📅 **Waktu Akses:** {datetime.now().strftime('%A, %d %B %Y - %H:%M')} WIB | "
-    "Sistem penyaringan ganda: **Validasi Sinyal BBMA Fuji V7** + **Lonjakan Volume"
-    " & Akumulasi Institusi** untuk emiten Bursa Efek Indonesia."
+    "Sistem penyaringan fokus murni: **Validasi Sinyal & Re-Entry BBMA Fuji V7**"
+    " untuk seluruh emiten Bursa Efek Indonesia."
 )
 
 
@@ -46,7 +46,7 @@ st.sidebar.header("⚙️ Konfigurasi Sistem Pro")
 mode = st.sidebar.radio(
     "Pilih Mode Operasi",
     [
-        "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)",
+        "🚀 Auto Screener (Fuji V7 Re-Entry Valid)",
         "🔍 Cek Manual (Single Stock Pro)",
     ],
 )
@@ -64,37 +64,9 @@ elif tf_package == "H4 - H1 - M15":
 else:
   tf_high, tf_mid, tf_exec = "15m", "5m", "1m"
 
-st.sidebar.markdown("---")
-st.sidebar.header("🛡️ Filter Tambahan Volume & Transaksi")
-
-# Opsi untuk mengabaikan filter transaksi & volume
-ignore_filters = st.sidebar.checkbox(
-    "🔓 Abaikan Filter (Tampilkan Semua yang Sinyal BBMA Valid)", value=False
-)
-
-# RANGE SLIDER: Batas Minimum dimulai dari 0 Rupiah
-val_range = st.sidebar.slider(
-    "Rentang Nilai Transaksi (Rupiah)",
-    min_value=0,
-    max_value=50_000_000_000,
-    value=(0, 20_000_000_000),
-    step=100_000_000,
-    format="Rp %d",
-)
-
-# RANGE SLIDER: Batas Minimum Lonjakan Volume dimulai dari 0.0x
-vol_range = st.sidebar.slider(
-    "Rentang Lonjakan Volume (vs MA20)",
-    min_value=0.0,
-    max_value=10.0,
-    value=(0.0, 5.0),
-    step=0.1,
-    format="%.1fx",
-)
-
 
 # -----------------------------------------------------------------
-# 3. FUNGSI TEKNIKAL & ANALISIS BBMA FUJI V7 + VOLUME
+# 3. FUNGSI TEKNIKAL & ANALISIS BBMA FUJI V7
 # -----------------------------------------------------------------
 def calculate_wma(series, length):
   weights = np.arange(1, length + 1)
@@ -287,44 +259,16 @@ def analyze_tf_fuji(df, role_type="TF1"):
   }
 
 
-def evaluate_combined_screener(
-    code,
-    tf_high_code,
-    tf_mid_code,
-    tf_exec_code,
-    val_range,
-    vol_range,
-    ignore_filters,
-):
+def evaluate_pure_bbma_screener(code, tf_high_code, tf_mid_code, tf_exec_code):
   try:
     d_exec = load_stock_data(f"{code}.JK", tf_exec_code)
     if d_exec.empty or len(d_exec) < 25:
       return None
 
     latest = d_exec.iloc[-1]
-    vol_ma20 = d_exec["Volume"].rolling(window=20).mean().iloc[-1]
-
     val_trx = latest["Close"] * latest["Volume"]
-    vol_ratio = latest["Volume"] / vol_ma20 if vol_ma20 > 0 else 0
 
-    # 1. EVALUASI FILTER RENTANG MIN-MAX DARI SIDEBAR
-    if ignore_filters:
-      passed_volume_filter = (
-          True  # Langsung loloskan jika dicentang, abaikan slider 0
-      )
-    else:
-      is_val_passed = val_range[0] <= val_trx <= val_range[1]
-      is_vol_passed = vol_range[0] <= vol_ratio <= vol_range[1]
-
-      rng = latest["High"] - latest["Low"]
-      close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
-      is_closing_strong = close_pos >= 0.70
-
-      passed_volume_filter = (
-          is_vol_passed and is_val_passed and is_closing_strong
-      )
-
-    # 2. EVALUASI STRUKTUR BBMA FUJI V7
+    # Evaluasi Struktur Multi-Timeframe BBMA Fuji V7
     if tf_high_code == "4h":
       df_h1 = load_stock_data(f"{code}.JK", "1h")
       d_high = resample_to_h4(df_h1)
@@ -345,28 +289,18 @@ def evaluate_combined_screener(
         and res_tf3["bias"] == "BUY"
     )
 
-    if passed_volume_filter and is_bbma_valid:
-      category = "🔥 COMBO SEMPURNA (Volume Meledak + Re-Entry Valid)"
-      score = 3
-    elif passed_volume_filter and not ignore_filters:
-      category = "⚡ VOLUME MELEDAK (Potensi Lanjut Naik)"
-      score = 2
-    elif is_bbma_valid:
-      category = "🎯 RE-ENTRY BBMA VALID (Aman)"
-      score = 1
-    else:
+    if not is_bbma_valid:
       return None
 
+    category = "🎯 RE-ENTRY / SETUP BBMA VALID"
     entry_zone = (res_tf3["bot_bb"] + res_tf3["mid_bb"]) / 2
 
     return {
         "Emiten": code,
         "Harga Terkini": res_tf3["price"],
         "Nilai Transaksi": f"Rp {val_trx:,.0f}",
-        "Lonjakan Vol": f"{vol_ratio:.1f}x MA20",
         "Estimasi Entry": f"Rp {entry_zone:,.0f}",
         "Kategori Sinyal": category,
-        "Score": score,
         "DF_Exec": d_exec,
         "TF1": res_tf1,
         "TF2": res_tf2,
@@ -379,20 +313,20 @@ def evaluate_combined_screener(
 # -----------------------------------------------------------------
 # 4. TAMPILAN DASHBOARD UTAMA (STREAMLIT UI)
 # -----------------------------------------------------------------
-if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
+if mode == "🚀 Auto Screener (Fuji V7 Re-Entry Valid)":
   st.subheader(
-      "🚀 Auto Screener - Combo Sempurna (Fuji V7 BBMA + Volume Dynamics)"
+      "🚀 Auto Screener - Murni Validasi Struktur BBMA Fuji V7 (Multi-Timeframe)"
   )
   st.markdown(
-      "Sistem memindai seluruh emiten BEI untuk menyaring saham berdasarkan"
-      " rentang nilai transaksi dan lonjakan volume minimal-maksimal yang Anda"
-      " tentukan di sidebar."
+      "Sistem memindai seluruh emiten BEI untuk mencari saham yang memenuhi"
+      " aturan valid re-entry / setup Buy Fuji V7 di semua timeframe pilihan"
+      " Anda."
   )
 
   scan_limit = st.sidebar.slider(
       "Jumlah Maksimal Saham yang Dipindai", 10, len(all_stocks), 60
   )
-  run_scan = st.sidebar.button("⚡ MULAI SCANNING GABUNGAN")
+  run_scan = st.sidebar.button("⚡ MULAI SCANNING BBMA")
 
   if run_scan:
     stocks_to_scan = all_stocks[:scan_limit]
@@ -406,9 +340,7 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
       txt_status.text(
           f"Memindai & Menganalisis [{i+1}/{total}]: {code}.JK ..."
       )
-      res = evaluate_combined_screener(
-          code, tf_high, tf_mid, tf_exec, val_range, vol_range, ignore_filters
-      )
+      res = evaluate_pure_bbma_screener(code, tf_high, tf_mid, tf_exec)
       if res:
         results.append(res)
       prog_bar.progress((i + 1) / total)
@@ -418,12 +350,11 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
 
     if results:
       df_res = pd.DataFrame(results)
-      df_res = df_res.sort_values(by="Score", ascending=False)
 
       st.markdown("---")
-      st.subheader("🔥 HASIL PEMINDAIAN PASAR (DIURUTKAN BERDASARKAN KUALITAS)")
+      st.subheader("🔥 HASIL PEMINDAIAN BBMA VALID")
       st.success(
-          f"Ditemukan **{len(df_res)} emiten** yang memenuhi kriteria screener!"
+          f"Ditemukan **{len(df_res)} emiten** dengan struktur BBMA Valid!"
       )
 
       st.dataframe(
@@ -432,7 +363,6 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
                   "Emiten",
                   "Harga Terkini",
                   "Nilai Transaksi",
-                  "Lonjakan Vol",
                   "Estimasi Entry",
                   "Kategori Sinyal",
               ]
@@ -493,7 +423,7 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
 
       fig.update_layout(
           title=(
-              f"Chart Analisis Kombo - {selected_valid}.JK ({tf_exec.upper()})"
+              f"Chart Analisis BBMA - {selected_valid}.JK ({tf_exec.upper()})"
           ),
           yaxis_title="Harga (IDR)",
           template="plotly_dark",
@@ -504,23 +434,20 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
 
     else:
       st.warning(
-          "⚠️ Tidak ada emiten yang memenuhi kombinasi rentang tersebut saat"
-          " ini. Coba perlebar rentang nilai transaksi atau aktifkan centang"
-          " **Abaikan Filter** di sidebar."
+          "⚠️ Tidak ada emiten yang memenuhi struktur valid pada pemindaian"
+          " ini."
       )
   else:
     st.info(
-        "👈 Sesuaikan rentang parameter di sidebar, lalu klik **⚡ MULAI"
-        " SCANNING GABUNGAN** untuk memindai pasar BEI."
+        "👈 Pilih paket timeframe di sidebar, lalu klik **⚡ MULAI SCANNING"
+        " BBMA** untuk memindai pasar BEI."
     )
 
 # -----------------------------------------------------------------
 # MODE 2: CEK MANUAL
 # -----------------------------------------------------------------
 else:
-  st.subheader(
-      "🔍 Cek Manual Pro - Analisis Mendalam Emiten (Fuji V7 + Volume)"
-  )
+  st.subheader("🔍 Cek Manual Pro - Analisis Mendalam Emiten (BBMA Fuji V7)")
   selected_stock = st.sidebar.selectbox(
       f"Pilih Emiten (Total {len(all_stocks)} Saham)", all_stocks, index=0
   )
@@ -528,14 +455,8 @@ else:
   with st.spinner(
       f"Menganalisis data mendalam untuk {selected_stock}.JK ..."
   ):
-    res = evaluate_combined_screener(
-        selected_stock,
-        tf_high,
-        tf_mid,
-        tf_exec,
-        val_range,
-        vol_range,
-        ignore_filters,
+    res = evaluate_pure_bbma_screener(
+        selected_stock, tf_high, tf_mid, tf_exec
     )
     d_exec = load_stock_data(f"{selected_stock}.JK", tf_exec)
 
@@ -561,14 +482,16 @@ else:
         "Nilai Transaksi", f"Rp {latest_price * d_exec['Volume'].iloc[-1]:,.0f}"
     )
 
-    # Status Kombo menggunakan kotak HTML kustom agar teks tidak terpotong ke kanan
+    # Status Kombo / Setup BBMA
     status_text = (
-        res["Kategori Sinyal"] if res else "Belum Masuk (Di Luar Filter)"
+        res["Kategori Sinyal"]
+        if res
+        else "Belum Valid (Struktur Belum Memenuhi)"
     )
     c4.markdown(
         f"""
         <div style="background-color: #262730; padding: 10px 14px; border-radius: 4px; border: 1px solid #41424C;">
-            <p style="color: #9N9N9N; font-size: 12px; margin-bottom: 2px;">Status Kombo</p>
+            <p style="color: #9N9N9N; font-size: 12px; margin-bottom: 2px;">Status Setup BBMA</p>
             <p style="color: #FFFFFF; font-size: 15px; font-weight: 600; margin: 0; word-break: break-word;">{status_text}</p>
         </div>
         """,
@@ -578,13 +501,13 @@ else:
     st.markdown("---")
     if res:
       st.success(
-          f"✨ **{selected_stock}** memenuhi kriteria screener gabungan"
-          " berdasarkan rentang Anda!"
+          f"✨ **{selected_stock}** memiliki struktur & Re-Entry BBMA Fuji V7"
+          " yang **VALID**!"
       )
     else:
       st.info(
-          f"ℹ️ **{selected_stock}** berada di luar rentang filter minimal-maksimal"
-          " yang diatur di sidebar."
+          f"ℹ️ **{selected_stock}** belum memenuhi syarat validasi multi-timeframe"
+          " BBMA saat ini."
       )
 
     fig = go.Figure()
@@ -632,7 +555,7 @@ else:
     )
 
     fig.update_layout(
-        title=f"Grafik Analisis Manual - {selected_stock}.JK",
+        title=f"Grafik Analisis BBMA - {selected_stock}.JK",
         yaxis_title="Harga (IDR)",
         template="plotly_dark",
         height=550,
