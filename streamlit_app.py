@@ -77,7 +77,7 @@ val_range = st.sidebar.slider(
     "Rentang Nilai Transaksi (Rupiah)",
     min_value=0,
     max_value=50_000_000_000,
-    value=(0, 20_000_000_000),  # Default dari 0 agar saham kecil tetap masuk
+    value=(0, 20_000_000_000),
     step=100_000_000,
     format="Rp %d",
 )
@@ -87,7 +87,7 @@ vol_range = st.sidebar.slider(
     "Rentang Lonjakan Volume (vs MA20)",
     min_value=0.0,
     max_value=10.0,
-    value=(0.0, 5.0),  # Default dari 0.0x
+    value=(0.0, 5.0),
     step=0.1,
     format="%.1fx",
 )
@@ -308,16 +308,18 @@ def evaluate_combined_screener(
     vol_ratio = latest["Volume"] / vol_ma20 if vol_ma20 > 0 else 0
 
     # 1. EVALUASI FILTER RENTANG MIN-MAX DARI SIDEBAR
-    is_val_passed = val_range[0] <= val_trx <= val_range[1]
-    is_vol_passed = vol_range[0] <= vol_ratio <= vol_range[1]
-
-    rng = latest["High"] - latest["Low"]
-    close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
-    is_closing_strong = close_pos >= 0.70
-
     if ignore_filters:
-      passed_volume_filter = True
+      passed_volume_filter = (
+          True  # Langsung loloskan jika dicentang, abaikan slider 0
+      )
     else:
+      is_val_passed = val_range[0] <= val_trx <= val_range[1]
+      is_vol_passed = vol_range[0] <= vol_ratio <= vol_range[1]
+
+      rng = latest["High"] - latest["Low"]
+      close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
+      is_closing_strong = close_pos >= 0.70
+
       passed_volume_filter = (
           is_vol_passed and is_val_passed and is_closing_strong
       )
