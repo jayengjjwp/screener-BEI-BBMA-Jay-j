@@ -575,4 +575,52 @@ else:
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
-            x=d_exec.
+            x=d_exec.index,
+            open=d_exec["Open"],
+            high=d_exec["High"],
+            low=d_exec["Low"],
+            close=d_exec["Close"],
+            name="Harga",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["topBB"],
+            name="BB Upper",
+            line=dict(color="gray", width=1, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["midBB"],
+            name="Mid BB",
+            line=dict(color="orange", width=1.5),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["lowBB"],
+            name="BB Lower",
+            line=dict(color="gray", width=1, dash="dot"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d_exec.index,
+            y=d_exec["ema50"],
+            name="EMA 50",
+            line=dict(color="magenta", width=1.2),
+        )
+    )
+
+    fig.update_layout(
+        title=f"Grafik Analisis Manual - {selected_stock}.JK",
+        yaxis_title="Harga (IDR)",
+        template="plotly_dark",
+        height=550,
+        xaxis_rangeslider_visible=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
