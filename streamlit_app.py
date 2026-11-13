@@ -67,22 +67,27 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Filter Tambahan Volume & Transaksi")
 
-# RANGE SLIDER: Batas Minimum & Maksimum Nilai Transaksi
+# Opsi untuk mengabaikan filter transaksi & volume
+ignore_filters = st.sidebar.checkbox(
+    "🔓 Abaikan Filter (Tampilkan Semua yang Sinyal BBMA Valid)", value=False
+)
+
+# RANGE SLIDER: Batas Minimum dimulai dari 0 Rupiah
 val_range = st.sidebar.slider(
     "Rentang Nilai Transaksi (Rupiah)",
-    min_value=100_000_000,
+    min_value=0,
     max_value=50_000_000_000,
-    value=(1_000_000_000, 20_000_000_000),  # Default: 1 Miliar s.d 20 Miliar
+    value=(0, 20_000_000_000),  # Default dari 0 agar saham kecil tetap masuk
     step=100_000_000,
     format="Rp %d",
 )
 
-# RANGE SLIDER: Batas Minimum & Maksimum Lonjakan Volume vs MA20
+# RANGE SLIDER: Batas Minimum Lonjakan Volume dimulai dari 0.0x
 vol_range = st.sidebar.slider(
     "Rentang Lonjakan Volume (vs MA20)",
-    min_value=0.5,
+    min_value=0.0,
     max_value=10.0,
-    value=(1.5, 5.0),  # Default: 1.5x s.d 5.0x
+    value=(0.0, 5.0),  # Default dari 0.0x
     step=0.1,
     format="%.1fx",
 )
@@ -283,7 +288,13 @@ def analyze_tf_fuji(df, role_type="TF1"):
 
 
 def evaluate_combined_screener(
-    code, tf_high_code, tf_mid_code, tf_exec_code, val_range, vol_range
+    code,
+    tf_high_code,
+    tf_mid_code,
+    tf_exec_code,
+    val_range,
+    vol_range,
+    ignore_filters,
 ):
   try:
     d_exec = load_stock_data(f"{code}.JK", tf_exec_code)
@@ -294,9 +305,7 @@ def evaluate_combined_screener(
     vol_ma20 = d_exec["Volume"].rolling(window=20).mean().iloc[-1]
 
     val_trx = latest["Close"] * latest["Volume"]
-    vol_ratio = (
-        latest["Volume"] / vol_ma20 if vol_ma20 > 0 else 0
-    )
+    vol_ratio = latest["Volume"] / vol_ma20 if vol_ma20 > 0 else 0
 
     # 1. EVALUASI FILTER RENTANG MIN-MAX DARI SIDEBAR
     is_val_passed = val_range[0] <= val_trx <= val_range[1]
@@ -306,9 +315,12 @@ def evaluate_combined_screener(
     close_pos = (latest["Close"] - latest["Low"]) / rng if rng > 0 else 0
     is_closing_strong = close_pos >= 0.70
 
-    passed_volume_filter = (
-        is_vol_passed and is_val_passed and is_closing_strong
-    )
+    if ignore_filters:
+      passed_volume_filter = True
+    else:
+      passed_volume_filter = (
+          is_vol_passed and is_val_passed and is_closing_strong
+      )
 
     # 2. EVALUASI STRUKTUR BBMA FUJI V7
     if tf_high_code == "4h":
@@ -334,7 +346,7 @@ def evaluate_combined_screener(
     if passed_volume_filter and is_bbma_valid:
       category = "🔥 COMBO SEMPURNA (Volume Meledak + Re-Entry Valid)"
       score = 3
-    elif passed_volume_filter:
+    elif passed_volume_filter and not ignore_filters:
       category = "⚡ VOLUME MELEDAK (Potensi Lanjut Naik)"
       score = 2
     elif is_bbma_valid:
@@ -393,7 +405,7 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
           f"Memindai & Menganalisis [{i+1}/{total}]: {code}.JK ..."
       )
       res = evaluate_combined_screener(
-          code, tf_high, tf_mid, tf_exec, val_range, vol_range
+          code, tf_high, tf_mid, tf_exec, val_range, vol_range, ignore_filters
       )
       if res:
         results.append(res)
@@ -491,7 +503,8 @@ if mode == "🚀 Auto Screener (Gabungan Fuji V7 + Volume Meledak)":
     else:
       st.warning(
           "⚠️ Tidak ada emiten yang memenuhi kombinasi rentang tersebut saat"
-          " ini. Coba perlebar rentang nilai transaksi atau volume di sidebar."
+          " ini. Coba perlebar rentang nilai transaksi atau aktifkan centang"
+          " **Abaikan Filter** di sidebar."
       )
   else:
     st.info(
@@ -514,7 +527,13 @@ else:
       f"Menganalisis data mendalam untuk {selected_stock}.JK ..."
   ):
     res = evaluate_combined_screener(
-        selected_stock, tf_high, tf_mid, tf_exec, val_range, vol_range
+        selected_stock,
+        tf_high,
+        tf_mid,
+        tf_exec,
+        val_range,
+        vol_range,
+        ignore_filters,
     )
     d_exec = load_stock_data(f"{selected_stock}.JK", tf_exec)
 
@@ -556,52 +575,4 @@ else:
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
-            x=d_exec.index,
-            open=d_exec["Open"],
-            high=d_exec["High"],
-            low=d_exec["Low"],
-            close=d_exec["Close"],
-            name="Harga",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=d_exec.index,
-            y=d_exec["topBB"],
-            name="BB Upper",
-            line=dict(color="gray", width=1, dash="dot"),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=d_exec.index,
-            y=d_exec["midBB"],
-            name="Mid BB",
-            line=dict(color="orange", width=1.5),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=d_exec.index,
-            y=d_exec["lowBB"],
-            name="BB Lower",
-            line=dict(color="gray", width=1, dash="dot"),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=d_exec.index,
-            y=d_exec["ema50"],
-            name="EMA 50",
-            line=dict(color="magenta", width=1.2),
-        )
-    )
-
-    fig.update_layout(
-        title=f"Grafik Analisis Manual - {selected_stock}.JK",
-        yaxis_title="Harga (IDR)",
-        template="plotly_dark",
-        height=550,
-        xaxis_rangeslider_visible=False,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            x=d_exec.
