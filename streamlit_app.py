@@ -16,7 +16,7 @@ st.title("📈 BBMA Fuji V7 - Ultimate BEI Re-Entry Screener")
 st.markdown(
     f"📅 **Waktu Akses:** {datetime.now().strftime('%A, %d %B %Y - %H:%M')} WIB | "
     "Sistem penyaringan fokus murni: **Validasi Sinyal & Re-Entry BBMA Fuji V7**"
-    " untuk seluruh emiten Bursa Efek Indonesia."
+    " multi-timeframe untuk seluruh emiten Bursa Efek Indonesia."
 )
 
 
@@ -203,17 +203,17 @@ def analyze_tf_fuji(df, role_type="TF1"):
     if is_re_buy or (
         c_price >= bot_bb and c_price <= latest["malo10"] * 1.025
     ):
-      status = "RE-ENTRY BUY VALID (Acuan Utama)"
+      status = "RE-ENTRY BUY VALID"
       bias = "BUY"
-      detail = "Penolakan valid di area MA Low (Fuji V7)."
+      detail = "Penolakan valid di area MA Low (Re-Entry Fuji V7)."
     elif is_mhv_buy or is_ext_buy:
-      status = "EXTREME / MHV BUY (Acuan Utama)"
+      status = "EXTREME / MHV BUY"
       bias = "BUY"
       detail = "Terdeteksi Extreme/MHV Buy di Low BB."
     elif c_price > mid_bb:
       status = "BULLISH BIAS (Menunggu Re-Entry)"
       bias = "BUY"
-      detail = "Harga di atas Mid BB, menunggu pullback."
+      detail = "Harga di atas Mid BB, tren mendukung."
     else:
       status = "BEARISH / TIDAK VALID"
       bias = "SELL"
@@ -223,29 +223,29 @@ def analyze_tf_fuji(df, role_type="TF1"):
     if is_re_buy or is_ext_buy or is_mhv_buy or is_mmt_buy or is_csak_buy:
       status = "KONFIRMASI BUY VALID"
       bias = "BUY"
-      detail = "TF2 mengonfirmasi struktur arah Buy."
+      detail = "TF Menengah mengonfirmasi arah tren Buy."
     elif c_price > mid_bb:
       status = "TF2 BULLISH"
       bias = "BUY"
-      detail = "Di atas Mid BB."
+      detail = "Harga di atas Mid BB."
     else:
       status = "TF2 BELUM KONFIRMASI"
       bias = "SELL"
-      detail = "Belum ada konfirmasi."
+      detail = "Belum ada konfirmasi struktur."
 
   elif role_type == "TF3":
     if is_mmt_buy or is_csak_buy or is_re_buy:
       status = "TRIGGER EKSEKUSI BUY"
       bias = "BUY"
-      detail = "TF3 memicu Momentum / CSAK / Re-Entry."
+      detail = "TF Eksekusi memicu Momentum / CSAK / Re-Entry."
     elif c_price > mid_bb:
       status = "TF3 BULLISH"
       bias = "BUY"
-      detail = "Mengalir searah."
+      detail = "Mengalir searah dengan tren."
     else:
       status = "TF3 BELUM ADA TRIGGER"
       bias = "SELL"
-      detail = "Belum ada trigger."
+      detail = "Belum ada trigger eksekusi."
 
   return {
       "price": c_price,
@@ -268,7 +268,6 @@ def evaluate_pure_bbma_screener(code, tf_high_code, tf_mid_code, tf_exec_code):
     latest = d_exec.iloc[-1]
     val_trx = latest["Close"] * latest["Volume"]
 
-    # Evaluasi Struktur Multi-Timeframe BBMA Fuji V7
     if tf_high_code == "4h":
       df_h1 = load_stock_data(f"{code}.JK", "1h")
       d_high = resample_to_h4(df_h1)
@@ -371,11 +370,28 @@ if mode == "🚀 Auto Screener (Fuji V7 Re-Entry Valid)":
       )
 
       selected_valid = st.selectbox(
-          "Pilih emiten di atas untuk melihat detail chart & struktur BBMA:",
+          "Pilih emiten di atas untuk melihat detail chart & alasan teknikal:",
           df_res["Emiten"].tolist(),
       )
       matched_row = df_res[df_res["Emiten"] == selected_valid].iloc[0]
       d_target = matched_row["DF_Exec"]
+
+      # Kotak Rincian Alasan Multi-Timeframe (Mirip XAUUSD Screener)
+      with st.expander(
+          f"📌 Rincian Alasan & Struktur Analisis Multi-Timeframe:"
+          f" {selected_valid}",
+          expanded=True,
+      ):
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+          st.markdown(f"**TF Tinggi ({tf_high.upper()})**")
+          st.info(f"**Status:** {matched_row['TF1']['status']}\n\n" f"• {matched_row['TF1']['detail']}")
+        with rc2:
+          st.markdown(f"**TF Menengah ({tf_mid.upper()})**")
+          st.info(f"**Status:** {matched_row['TF2']['status']}\n\n" f"• {matched_row['TF2']['detail']}")
+        with rc3:
+          st.markdown(f"**TF Eksekusi ({tf_exec.upper()})**")
+          st.info(f"**Status:** {matched_row['TF3']['status']}\n\n" f"• {matched_row['TF3']['detail']}")
 
       fig = go.Figure()
       fig.add_trace(
@@ -455,19 +471,32 @@ else:
   with st.spinner(
       f"Menganalisis data mendalam untuk {selected_stock}.JK ..."
   ):
+    # Mengambil analisis lengkap walau belum tentu lolos filter (untuk mode cek manual)
+    if tf_high == "4h":
+      df_h1_temp = load_stock_data(f"{selected_stock}.JK", "1h")
+      d_high_m = resample_to_h4(df_h1_temp)
+    else:
+      d_high_m = load_stock_data(f"{selected_stock}.JK", tf_high)
+
+    d_mid_m = load_stock_data(f"{selected_stock}.JK", tf_mid)
+    d_exec_m = load_stock_data(f"{selected_stock}.JK", tf_exec)
+
+    res_tf1_m = analyze_tf_fuji(d_high_m, role_type="TF1")
+    res_tf2_m = analyze_tf_fuji(d_mid_m, role_type="TF2")
+    res_tf3_m = analyze_tf_fuji(d_exec_m, role_type="TF3")
+
     res = evaluate_pure_bbma_screener(
         selected_stock, tf_high, tf_mid, tf_exec
     )
-    d_exec = load_stock_data(f"{selected_stock}.JK", tf_exec)
 
-  if d_exec.empty:
+  if d_exec_m.empty:
     st.warning(
         f"⚠️ Gagal memuat data untuk **{selected_stock}.JK**. Periksa likuiditas"
         " saham tersebut."
     )
   else:
-    latest_price = d_exec["Close"].iloc[-1]
-    prev_price = d_exec["Close"].iloc[-2] if len(d_exec) > 1 else latest_price
+    latest_price = d_exec_m["Close"].iloc[-1]
+    prev_price = d_exec_m["Close"].iloc[-2] if len(d_exec_m) > 1 else latest_price
     chg = latest_price - prev_price
     pct = (chg / prev_price) * 100 if prev_price > 0 else 0
 
@@ -477,16 +506,16 @@ else:
         f"Rp {latest_price:,.0f}",
         f"{chg:+,.0f} ({pct:+.2f}%)",
     )
-    c2.metric("Volume Hari Ini", f"{d_exec['Volume'].iloc[-1]:,.0f}")
+    c2.metric("Volume Hari Ini", f"{d_exec_m['Volume'].iloc[-1]:,.0f}")
     c3.metric(
-        "Nilai Transaksi", f"Rp {latest_price * d_exec['Volume'].iloc[-1]:,.0f}"
+        "Nilai Transaksi",
+        f"Rp {latest_price * d_exec_m['Volume'].iloc[-1]:,.0f}",
     )
 
-    # Status Kombo / Setup BBMA
     status_text = (
         res["Kategori Sinyal"]
         if res
-        else "Belum Valid (Struktur Belum Memenuhi)"
+        else "Belum Valid (Struktur Belum Konfirmasi)"
     )
     c4.markdown(
         f"""
@@ -499,56 +528,59 @@ else:
     )
 
     st.markdown("---")
-    if res:
-      st.success(
-          f"✨ **{selected_stock}** memiliki struktur & Re-Entry BBMA Fuji V7"
-          " yang **VALID**!"
-      )
-    else:
-      st.info(
-          f"ℹ️ **{selected_stock}** belum memenuhi syarat validasi multi-timeframe"
-          " BBMA saat ini."
-      )
+
+    # Kotak Rincian Alasan Teknikal Multi-Timeframe
+    st.markdown("### 📌 Rincian Alasan & Struktur Analisis Multi-Timeframe")
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+      st.markdown(f"**TF Tinggi ({tf_high.upper()})**")
+      st.info(f"**Status:** {res_tf1_m['status']}\n\n" f"• {res_tf1_m['detail']}")
+    with rc2:
+      st.markdown(f"**TF Menengah ({tf_mid.upper()})**")
+      st.info(f"**Status:** {res_tf2_m['status']}\n\n" f"• {res_tf2_m['detail']}")
+    with rc3:
+      st.markdown(f"**TF Eksekusi ({tf_exec.upper()})**")
+      st.info(f"**Status:** {res_tf3_m['status']}\n\n" f"• {res_tf3_m['detail']}")
 
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
-            x=d_exec.index,
-            open=d_exec["Open"],
-            high=d_exec["High"],
-            low=d_exec["Low"],
-            close=d_exec["Close"],
+            x=d_exec_m.index,
+            open=d_exec_m["Open"],
+            high=d_exec_m["High"],
+            low=d_exec_m["Low"],
+            close=d_exec_m["Close"],
             name="Harga",
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=d_exec.index,
-            y=d_exec["topBB"],
+            x=d_exec_m.index,
+            y=d_exec_m["topBB"],
             name="BB Upper",
             line=dict(color="gray", width=1, dash="dot"),
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=d_exec.index,
-            y=d_exec["midBB"],
+            x=d_exec_m.index,
+            y=d_exec_m["midBB"],
             name="Mid BB",
             line=dict(color="orange", width=1.5),
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=d_exec.index,
-            y=d_exec["lowBB"],
+            x=d_exec_m.index,
+            y=d_exec_m["lowBB"],
             name="BB Lower",
             line=dict(color="gray", width=1, dash="dot"),
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=d_exec.index,
-            y=d_exec["ema50"],
+            x=d_exec_m.index,
+            y=d_exec_m["ema50"],
             name="EMA 50",
             line=dict(color="magenta", width=1.2),
         )
