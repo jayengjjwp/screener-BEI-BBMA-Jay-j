@@ -53,14 +53,16 @@ mode = st.sidebar.radio(
 
 tf_package = st.sidebar.selectbox(
     "Pilih Paket Hierarki Timeframe BBMA",
-    ["D1 - H4 - H1", "H4 - H1 - M15"],
+    ["D1 - H4 - H1", "H4 - H1 - M15", "H1 - M15 - M5"],
     index=0,
 )
 
 if tf_package == "D1 - H4 - H1":
   tf_high, tf_mid, tf_exec = "1d", "4h", "1h"
-else:
+elif tf_package == "H4 - H1 - M15":
   tf_high, tf_mid, tf_exec = "4h", "1h", "15m"
+else:
+  tf_high, tf_mid, tf_exec = "1h", "15m", "5m"
 
 lookback_bars = st.sidebar.slider(
     "Batas Mundur Cek CSAK/CSM (Candle)",
@@ -83,10 +85,14 @@ def calculate_wma(series, length):
 
 @st.cache_data(ttl=0)
 def load_stock_data(ticker_symbol, interval):
-  period = "5d" if interval in ["1m", "5m", "15m"] else "1mo"
-  if interval == "4h":
+  # Penyesuaian period Yahoo Finance agar mendukung timeframe kecil (m5, m15)
+  if interval in ["1m", "5m"]:
+    period = "5d"
+  elif interval == "15m":
+    period = "1mo"
+  elif interval in ["1h", "4h"]:
     period = "3mo"
-  elif interval == "1d":
+  else:
     period = "1y"
 
   try:
@@ -306,9 +312,6 @@ def evaluate_pure_bbma_screener(code, tf_high_code, tf_mid_code, tf_exec_code):
     res_tf2 = analyze_tf_fuji(d_mid, role_type="TF2")
     res_tf3 = analyze_tf_fuji(d_exec, role_type="TF3")
 
-    # KUNCI FILTER KETAT:
-    # 1. TF Utama (TF1) dan TF Menengah (TF2) wajib searah BUY
-    # 2. TF Eksekusi (TF3) atau TF Menengah (TF2) wajib sedang status "RE-ENTRY VALID" (sudah ada CSAK/CSM sebelumnya)
     is_true_reentry = (
         res_tf1["bias"] == "BUY"
         and res_tf2["bias"] == "BUY"
@@ -321,14 +324,12 @@ def evaluate_pure_bbma_screener(code, tf_high_code, tf_mid_code, tf_exec_code):
     if not is_true_reentry:
       return None
 
-    # Tentukan asal trigger dari TF yang sedang Re-Entry
     active_trigger = (
         res_tf3["trigger_source"]
         if "RE-ENTRY VALID" in res_tf3["status"]
         else res_tf2["trigger_source"]
     )
 
-    # Zona Entry Presisi (Rentang antara MA 5 Low dan MA 10 Low di TF Eksekusi)
     entry_low = min(res_tf3["malo5"], res_tf3["malo10"])
     entry_high = max(res_tf3["malo5"], res_tf3["malo10"])
 
